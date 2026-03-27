@@ -29,17 +29,15 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Install hub to download weights and MLX for generation
-          uv pip install --system mlx torch huggingface_hub
+          # We only need MLX and the video repo here
+          uv pip install --system mlx torch
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
       - name: Download Model Weights
         run: |
-          echo "=== Downloading Wan2.1-1.3B-4bit ==="
-          # Calling the CLI via python3 -m to ensure it is found
-          python3 -m huggingface_hub.commands.cli download \
-            mlx-community/Wan2.1-T2V-1.3B-4bit \
-            --local-dir ./wan_model
+          echo "=== Downloading Wan2.1-1.3B-4bit using uvx hf ==="
+          # uvx hf is the fastest, most reliable way to download from the Hub in 2026
+          uvx hf download mlx-community/Wan2.1-T2V-1.3B-4bit --local-dir ./wan_model
 
       - name: Wan2.1-1.3B Smoke Test
         continue-on-error: true
@@ -61,7 +59,6 @@ jobs:
           echo "Detected Module: $GENERATOR_MODULE"
           echo "=== Starting 4-bit Generation (7GB RAM Limit) ==="
           
-          # Using the local path ./wan_model that we just downloaded
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
             --prompt "A simple red ball bouncing" \
