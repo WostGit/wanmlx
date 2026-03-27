@@ -29,16 +29,18 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Install core MLX and the video engine
           uv pip install --system mlx torch
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
       - name: Download Model Weights
         run: |
-          echo "=== Downloading Complete 4-bit Wan2.1-1.3B Package ==="
+          echo "=== Downloading Wan2.1-1.3B-4bit ==="
           mkdir -p wan_model
-          # Using a confirmed all-in-one MLX 4-bit repo
-          uvx hf download dgrauet/Wan2.1-T2V-1.3B-v0.1-mlx-4bit --local-dir ./wan_model
+          # Using the official mlx-community repo which is public
+          uvx hf download mlx-community/Wan2.1-T2V-1.3B-4bit --local-dir ./wan_model
+          
+          echo "=== Content of wan_model ==="
+          ls -F ./wan_model
 
       - name: Wan2.1-1.3B Smoke Test
         continue-on-error: true
@@ -60,14 +62,14 @@ jobs:
           echo "Detected Module: $GENERATOR_MODULE"
           echo "=== Starting 4-bit Generation (7GB RAM Limit) ==="
           
-          # Running with ultra-low steps and resolution to survive 7GB RAM
+          # Using ultra-low settings to ensure we don't hit the 7GB RAM wall
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
             --prompt "A simple red ball bouncing" \
             --width 256 \
             --height 256 \
             --num-frames 9 \
-            --steps 3 \
+            --steps 1 \
             --output-path smoke_test.mp4
 
       - name: Upload Result
