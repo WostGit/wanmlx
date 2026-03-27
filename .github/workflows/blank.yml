@@ -26,77 +26,73 @@ jobs:
           uv pip install --system mlx torch huggingface_hub safetensors
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
-      - name: Download and Prepare Wan2.1-1.3B Models
+      - name: Download Lightweight Models (FP8 T5 + essentials)
         run: |
           python3 - <<'EOF'
           import os
-          import shutil
-          from huggingface_hub import hf_hub_download, list_repo_files
+          from huggingface_hub import hf_hub_download
 
-          repo = "Wan-AI/Wan2.1-T2V-1.3B"
           dest = "wan_model"
           os.makedirs(dest, exist_ok=True)
 
-          print("Listing files in repo...")
-          all_files = list_repo_files(repo)
+          print("=== Downloading lightweight models for ultra-low RAM test ===")
 
-          target_files = {}
+          # 1. FP8 T5 Encoder (~6.7 GB instead of 11.4 GB)
+          print("Downloading FP8 T5 encoder...")
+          hf_hub_download(
+              repo_id="Kijai/WanVideo_comfy",
+              filename="umt5-xxl-enc-fp8_e4m3fn.safetensors",
+              local_dir=dest,
+              local_dir_use_symlinks=False
+          )
+          os.rename(
+              os.path.join(dest, "umt5-xxl-enc-fp8_e4m3fn.safetensors"),
+              os.path.join(dest, "t5_encoder.safetensors")
+          )
 
-          # Config
-          config_cands = [f for f in all_files if f.endswith("config.json")]
-          if config_cands:
-              target_files["config.json"] = config_cands[0]
+          # 2. VAE
+          print("Downloading VAE...")
+          hf_hub_download(
+              repo_id="Wan-AI/Wan2.1-T2V-1.3B",
+              filename="Wan2.1_VAE.pth",
+              local_dir=dest,
+              local_dir_use_symlinks=False
+          )
+          os.rename(
+              os.path.join(dest, "Wan2.1_VAE.pth"),
+              os.path.join(dest, "vae.pth")
+          )
 
-          # VAE
-          vae_cands = [f for f in all_files if "vae" in f.lower()]
-          if vae_cands:
-              target_files["vae.pth"] = vae_cands[0]
+          # 3. Transformer (DiT) - small enough for smoke test
+          print("Downloading Transformer...")
+          hf_hub_download(
+              repo_id="Wan-AI/Wan2.1-T2V-1.3B",
+              filename="diffusion_pytorch_model.safetensors",
+              local_dir=dest,
+              local_dir_use_symlinks=False
+          )
+          os.rename(
+              os.path.join(dest, "diffusion_pytorch_model.safetensors"),
+              os.path.join(dest, "transformer.safetensors")
+          )
 
-          # Transformer
-          trans_cands = [f for f in all_files if "diffusion_pytorch_model" in f or "transformer" in f.lower()]
-          if trans_cands:
-              target_files["transformer.safetensors"] = trans_cands[0]
+          # 4. Config (if needed)
+          print("Downloading config...")
+          hf_hub_download(
+              repo_id="Wan-AI/Wan2.1-T2V-1.3B",
+              filename="config.json",
+              local_dir=dest,
+              local_dir_use_symlinks=False
+          )
 
-          # T5 Encoder (the problematic one)
-          t5_cands = [f for f in all_files if ("t5" in f.lower() or "umt5" in f.lower()) and f.endswith((".pth", ".safetensors"))]
-          if t5_cands:
-              # Prefer safetensors if available, otherwise the official .pth
-              t5_file = next((f for f in t5_cands if f.endswith(".safetensors")), t5_cands[0])
-              target_files["t5_source"] = t5_file
-          else:
-              raise ValueError("T5 encoder not found in the repository!")
-
-          # Download files
-          for local_name, remote_path in target_files.items():
-              if local_name == "t5_source":
-                  continue
-              print(f"Downloading {remote_path} as {local_name}...")
-              hf_hub_download(repo_id=repo, filename=remote_path, local_dir=dest, local_dir_use_symlinks=False)
-
-          # Handle T5 specially (rename + possible conversion)
-          t5_remote = target_files["t5_source"]
-          print(f"Downloading T5 encoder: {t5_remote}")
-          t5_downloaded = hf_hub_download(repo_id=repo, filename=t5_remote, local_dir=dest, local_dir_use_symlinks=False)
-
-          t5_final = os.path.join(dest, "t5_encoder.safetensors")
-          t5_pth = os.path.join(dest, "models_t5_umt5-xxl-enc-bf16.pth")
-
-          if t5_remote.endswith(".pth"):
-              shutil.move(t5_downloaded, t5_pth)
-              print("T5 is .pth file → converting to safetensors...")
-              import torch
-              import safetensors.torch
-              state_dict = torch.load(t5_pth, map_location="cpu", weights_only=True)
-              safetensors.torch.save_file(state_dict, t5_final)
-              print("Conversion completed successfully.")
-          else:
-              shutil.move(t5_downloaded, t5_final)
-              print("T5 already in safetensors format.")
-
-          print("\n=== Files in wan_model ===")
+          print("\n=== Files downloaded ===")
           for f in sorted(os.listdir(dest)):
               size_gb = os.path.getsize(os.path.join(dest, f)) / (1024**3)
-              print(f"  {f:40} {size_gb:.2f} GB")
+              print(f"  {f:45} {size_gb:.2f} GB")
+
+          # Show free space
+          print("\nFree disk space:")
+          os.system("df -h .")
           EOF
 
       - name: Wan2.1-1.3B Ultra-Low RAM Smoke Test
@@ -126,7 +122,9 @@ jobs:
       - name: Diagnostics
         if: always()
         run: |
-          echo "=== Final files in wan_model ==="
+          echo "=== wan_model directory ==="
           ls -lh wan_model || true
-          echo "=== smoke_test.mp4 exists? ==="
+          echo "=== Free space after run ==="
+          df -h .
+          echo "=== smoke_test.mp4 ==="
           ls -lh smoke_test.mp4 || echo "No video generated"
