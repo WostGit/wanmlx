@@ -23,52 +23,52 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Install huggingface_hub specifically to get the CLI
           uv pip install --system mlx torch huggingface_hub
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
-      - name: Targeted Download and Rename
+      - name: Python-Based Download and Flatten
         run: |
-          mkdir -p wan_model
-          
-          # We use python3 -m huggingface_hub.commands.cli to ensure the command is found
-          # and use --local-dir-use-symlinks False to ensure real files are downloaded
-          
-          echo "Downloading Config..."
-          python3 -m huggingface_hub.commands.cli download Wan-AI/Wan2.1-T2V-1.3B config.json --local-dir ./wan_model --local-dir-use-symlinks False
-          
-          echo "Downloading VAE..."
-          python3 -m huggingface_hub.commands.cli download Wan-AI/Wan2.1-T2V-1.3B Wan2.1_VAE.pth --local-dir ./wan_model --local-dir-use-symlinks False
-          
-          echo "Downloading Transformer..."
-          python3 -m huggingface_hub.commands.cli download Wan-AI/Wan2.1-T2V-1.3B diffusion_pytorch_model.safetensors --local-dir ./wan_model --local-dir-use-symlinks False
-          
-          echo "Downloading T5 Encoder..."
-          # The official path is inside a models/ folder
-          python3 -m huggingface_hub.commands.cli download Wan-AI/Wan2.1-T2V-1.3B models/t5_umt5-xxl-enc-bf16.safetensors --local-dir ./wan_model --local-dir-use-symlinks False
+          python3 - <<'EOF'
+          from huggingface_hub import hf_hub_download
+          import os
+          import shutil
 
-          # RENAME AND FLATTEN
-          echo "Renaming files for MLX-Video..."
-          mv ./wan_model/Wan2.1_VAE.pth ./wan_model/vae.pth || true
-          mv ./wan_model/diffusion_pytorch_model.safetensors ./wan_model/transformer.safetensors || true
+          repo = "Wan-AI/Wan2.1-T2V-1.3B"
+          dest = "wan_model"
+          os.makedirs(dest, exist_ok=True)
+
+          # Map of {Remote File Path: Local Filename the Generator Expects}
+          files = {
+              "config.json": "config.json",
+              "Wan2.1_VAE.pth": "vae.pth",
+              "diffusion_pytorch_model.safetensors": "transformer.safetensors",
+              "models/t5_umt5-xxl-enc-bf16.safetensors": "t5_encoder.safetensors"
+          }
+
+          for remote, local in files.items():
+              print(f"Downloading {remote} -> {local}...")
+              path = hf_hub_download(
+                  repo_id=repo, 
+                  filename=remote, 
+                  local_dir=dest, 
+                  local_dir_use_symlinks=False
+              )
+              # If the file landed in a subfolder (like models/), move it to root
+              final_path = os.path.join(dest, local)
+              if path != final_path:
+                  shutil.move(path, final_path)
           
-          # Handle the subfolder for T5
-          if [ -f ./wan_model/models/t5_umt5-xxl-enc-bf16.safetensors ]; then
-            mv ./wan_model/models/t5_umt5-xxl-enc-bf16.safetensors ./wan_model/t5_encoder.safetensors
-          elif [ -f ./wan_model/t5_umt5-xxl-enc-bf16.safetensors ]; then
-            mv ./wan_model/t5_umt5-xxl-enc-bf16.safetensors ./wan_model/t5_encoder.safetensors
-          fi
-          
-          echo "=== Final Folder Structure ==="
-          ls -R ./wan_model
+          print("Download and flattening complete.")
+          EOF
 
       - name: Wan2.1-1.3B Smoke Test
         continue-on-error: true
         run: |
+          # Use the known module path for the Wan2.1 generator
           GENERATOR_MODULE="mlx_video.models.wan_2.generate"
           
           echo "Starting Ultra-Low RAM Generation..."
-          # Tiny resolution for the 7GB RAM limit
+          # 128x128 resolution to survive the 7GB RAM limit
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
             --prompt "Red ball" \
@@ -85,3 +85,10 @@ jobs:
           name: smoke-test-video
           path: smoke_test.mp4
           if-no-files-found: warn
+
+      - name: Final Diagnostics
+        if: always()
+        run: |
+          echo "=== Final Folder Structure ==="
+          ls -R ./wan_model
+          [ -f smoke_test.mp4 ] && echo "Video generated successfully." || echo "Video generation failed."
