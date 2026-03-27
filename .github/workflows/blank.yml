@@ -9,10 +9,6 @@ jobs:
   test-video-low-ram:
     runs-on: macos-14
     
-    defaults:
-      run:
-        shell: bash
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,58 +20,47 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
 
       - name: Install dependencies
         run: |
-          uv pip install --system mlx torch huggingface_hub hf_transfer
+          uv pip install --system mlx torch huggingface_hub
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
-      - name: Download Model Weights
-        env:
-          HF_HUB_ENABLE_HF_TRANSFER: 1
+      - name: Targeted Download & Fix
         run: |
-          echo "=== Downloading Official Wan2.1-1.3B Weights ==="
           mkdir -p wan_model
           
-          # We target the official repo. Even if 4-bit isn't a separate repo, 
-          # mlx-video will load these weights into memory efficiently.
-          uvx hf download Wan-AI/Wan2.1-T2V-1.3B \
-            --include "config.json" "*.safetensors" "*.txt" \
-            --local-dir ./wan_model
-
-          echo "=== Verification: Model Files ==="
-          ls -R ./wan_model
+          # 1. Download only the config and the small VAE (total ~600MB)
+          uvx hf download Wan-AI/Wan2.1-T2V-1.3B config.json Wan2.1_VAE.pth --local-dir ./wan_model
+          
+          # 2. Download the Transformer (This is the 5.6GB core)
+          uvx hf download Wan-AI/Wan2.1-T2V-1.3B diffusion_pytorch_model.safetensors --local-dir ./wan_model
+          
+          # 3. FIX: Rename files to match what mlx-video's loader expects
+          # mlx-video expects 'vae.safetensors' and 'transformer.safetensors' in some versions
+          cd wan_model
+          mv Wan2.1_VAE.pth vae.pth
+          mv diffusion_pytorch_model.safetensors transformer.safetensors
+          cd ..
 
       - name: Wan2.1-1.3B Smoke Test
         continue-on-error: true
         run: |
-          # Identify the generator module dynamically
-          GENERATOR_MODULE=$(python3 - <<'PY'
-          import os, mlx_video, pkgutil
-          pkg_path = os.path.dirname(mlx_video.__file__)
-          found_mod = next((info.name for info in pkgutil.walk_packages([pkg_path], "mlx_video.") if "wan" in info.name and "generate" in info.name), "NOT_FOUND")
-          print(found_mod)
-          PY
-          )
+          # Identify the generator module
+          GENERATOR_MODULE=$(python3 -c "import mlx_video; print('mlx_video.models.wan_2.generate')")
 
-          if [ "$GENERATOR_MODULE" == "NOT_FOUND" ]; then
-            echo "Error: MLX Generator module not found."
-            exit 1
-          fi
-
-          echo "Detected Module: $GENERATOR_MODULE"
-          echo "=== Starting 1-Step Generation (7GB RAM Guard) ==="
+          echo "Starting 1-Step Generation (Safety Mode)..."
           
-          # Using 1 step and 256px to ensure we don't swap to disk/OOM
+          # --t5-cpu is CRITICAL for your 7GB RAM limit. 
+          # It keeps the heavy text encoder out of the GPU/Apple Silicon unified memory.
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
-            --prompt "A small green cube spinning" \
+            --prompt "Red ball" \
             --width 256 \
             --height 256 \
             --num-frames 9 \
             --steps 1 \
+            --t5-cpu \
             --output-path smoke_test.mp4
 
       - name: Upload Result
@@ -84,11 +69,7 @@ jobs:
         with:
           name: smoke-test-video
           path: smoke_test.mp4
-          if-no-files-found: warn
 
-      - name: Final Diagnostics
+      - name: Final Check
         if: always()
-        run: |
-          echo "=== Final Status ==="
-          [ -f smoke_test.mp4 ] && ls -lh smoke_test.mp4 || echo "Generation failed."
-          df -h
+        run: ls -lh smoke_test.mp4 || echo "No video produced."
