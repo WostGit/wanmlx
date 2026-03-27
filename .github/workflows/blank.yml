@@ -26,49 +26,50 @@ jobs:
           uv pip install --system mlx torch huggingface_hub
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
-      - name: Python-Based Download and Flatten
+      - name: Robust Python Download
         run: |
           python3 - <<'EOF'
-          from huggingface_hub import hf_hub_download
-          import os
-          import shutil
+          import os, shutil
+          from huggingface_hub import hf_hub_download, list_repo_files
 
           repo = "Wan-AI/Wan2.1-T2V-1.3B"
           dest = "wan_model"
           os.makedirs(dest, exist_ok=True)
 
-          # Map of {Remote File Path: Local Filename the Generator Expects}
-          files = {
-              "config.json": "config.json",
-              "Wan2.1_VAE.pth": "vae.pth",
-              "diffusion_pytorch_model.safetensors": "transformer.safetensors",
-              "models/t5_umt5-xxl-enc-bf16.safetensors": "t5_encoder.safetensors"
-          }
-
-          for remote, local in files.items():
-              print(f"Downloading {remote} -> {local}...")
-              path = hf_hub_download(
-                  repo_id=repo, 
-                  filename=remote, 
-                  local_dir=dest, 
-                  local_dir_use_symlinks=False
-              )
-              # If the file landed in a subfolder (like models/), move it to root
-              final_path = os.path.join(dest, local)
-              if path != final_path:
-                  shutil.move(path, final_path)
+          # Get all files in the repo to find the real T5 filename
+          all_files = list_repo_files(repo)
           
-          print("Download and flattening complete.")
+          # Logic to find the correct files based on patterns
+          target_files = {}
+          
+          # Find Config
+          target_files["config.json"] = next(f for f in all_files if f.endswith("config.json"))
+          # Find VAE
+          target_files["vae.pth"] = next(f for f in all_files if "VAE" in f)
+          # Find Transformer
+          target_files["transformer.safetensors"] = next(f for f in all_files if "diffusion_pytorch_model" in f)
+          # Find T5 Encoder (The tricky one)
+          target_files["t5_encoder.safetensors"] = next(f for f in all_files if "t5" in f.lower() and f.endswith((".safetensors", ".pth")))
+
+          for local_name, remote_path in target_files.items():
+              print(f"Downloading {remote_path} as {local_name}...")
+              downloaded_path = hf_hub_download(repo_id=repo, filename=remote_path, local_dir=dest)
+              
+              # Flatten the structure: Move to root of wan_model
+              final_dest = os.path.join(dest, local_name)
+              if os.path.abspath(downloaded_path) != os.path.abspath(final_dest):
+                  shutil.move(downloaded_path, final_dest)
+
+          print("Successfully prepared wan_model directory.")
           EOF
 
       - name: Wan2.1-1.3B Smoke Test
         continue-on-error: true
         run: |
-          # Use the known module path for the Wan2.1 generator
           GENERATOR_MODULE="mlx_video.models.wan_2.generate"
           
           echo "Starting Ultra-Low RAM Generation..."
-          # 128x128 resolution to survive the 7GB RAM limit
+          # 128x128 resolution + 1 step = lowest possible memory footprint
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
             --prompt "Red ball" \
@@ -86,9 +87,8 @@ jobs:
           path: smoke_test.mp4
           if-no-files-found: warn
 
-      - name: Final Diagnostics
+      - name: Diagnostics
         if: always()
         run: |
-          echo "=== Final Folder Structure ==="
-          ls -R ./wan_model
-          [ -f smoke_test.mp4 ] && echo "Video generated successfully." || echo "Video generation failed."
+          echo "=== Files in wan_model ==="
+          ls -lh wan_model
