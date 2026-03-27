@@ -29,67 +29,43 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Install core MLX and the specific repo
-          # Using --system to ensure visibility across the runner environment
-          uv pip install --system mlx torch
+          uv pip install --system mlx torch huggingface_hub
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
-      - name: System Check
+      - name: Download Model Weights
         run: |
-          echo "=== Memory & Disk Status ==="
-          sysctl hw.memsize
-          vm_stat
-          df -h
+          echo "=== Downloading Wan2.1-1.3B-4bit ==="
+          # Downloading specifically to a local 'model' directory
+          huggingface-cli download mlx-community/Wan2.1-T2V-1.3B-4bit --local-dir ./wan_model
 
       - name: Wan2.1-1.3B Smoke Test
         continue-on-error: true
         run: |
           echo "=== Locating Wan Generator Module ==="
-          
-          # This script finds the correct module path even if the repo structure changes
           GENERATOR_MODULE=$(python3 - <<'PY'
-          import os
-          import mlx_video
-          import pkgutil
-
+          import os, mlx_video, pkgutil
           pkg_path = os.path.dirname(mlx_video.__file__)
-          found_mod = None
-
-          # Walk through all submodules to find one containing 'wan' and 'generate'
-          for info in pkgutil.walk_packages([pkg_path], "mlx_video."):
-              if "wan" in info.name and "generate" in info.name:
-                  found_mod = info.name
-                  break
-          
-          # Fallback: manual file search if walk_packages misses it
-          if not found_mod:
-              for root, _, files in os.walk(pkg_path):
-                  if "generate.py" in files and "wan" in root.lower():
-                      rel = os.path.relpath(os.path.join(root, "generate"), os.path.dirname(pkg_path))
-                      found_mod = rel.replace(os.sep, ".")
-                      break
-
-          print(found_mod if found_mod else "NOT_FOUND")
+          found_mod = next((info.name for info in pkgutil.walk_packages([pkg_path], "mlx_video.") if "wan" in info.name and "generate" in info.name), "NOT_FOUND")
+          print(found_mod)
           PY
           )
 
           if [ "$GENERATOR_MODULE" == "NOT_FOUND" ]; then
-            echo "Error: Could not find any 'wan' generator module in mlx-video."
-            echo "Listing all available modules for debugging:"
-            python3 -c "import pkgutil, mlx_video; [print(m.name) for m in pkgutil.walk_packages(mlx_video.__path__, 'mlx_video.')]"
+            echo "Error: Generator not found."
             exit 1
           fi
 
           echo "Detected Module: $GENERATOR_MODULE"
-          echo "=== Starting 4-bit Generation (7GB RAM Limit) ==="
+          echo "=== Starting 4-bit Generation ==="
           
-          # Run the discovered module
+          # Swapped --model-repo for --model-dir pointing to our downloaded folder
           python3 -m $GENERATOR_MODULE \
-            --model-repo "mlx-community/Wan2.1-T2V-1.3B-4bit" \
+            --model-dir ./wan_model \
             --prompt "A simple red ball bouncing" \
             --width 256 \
             --height 256 \
             --num-frames 9 \
+            --steps 5 \
             --output-path smoke_test.mp4
 
       - name: Upload Result
@@ -104,5 +80,5 @@ jobs:
         if: always()
         run: |
           echo "=== Final Status ==="
-          [ -f smoke_test.mp4 ] && ls -lh smoke_test.mp4 || echo "Video generation failed or OOMed."
+          [ -f smoke_test.mp4 ] && ls -lh smoke_test.mp4 || echo "Video generation failed."
           df -h
