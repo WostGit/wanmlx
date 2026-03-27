@@ -29,21 +29,16 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Use --system to ensure the runner's python sees the packages
-          uv pip install --system mlx torch huggingface_hub
+          # Install core MLX and the video engine
+          uv pip install --system mlx torch
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
       - name: Download Model Weights
         run: |
-          echo "=== Downloading Wan2.1-1.3B-4bit ==="
-          # We use Wan-AI/Wan2.1-T2V-1.3B as a fallback if the mlx-community one is missing
-          # and specifically target the 4bit files if available.
-          
+          echo "=== Downloading Complete 4-bit Wan2.1-1.3B Package ==="
           mkdir -p wan_model
-          
-          # This command is more robust: it tries the community quant first
-          uvx hf download mlx-community/Wan2.1-T2V-1.3B-4bit --local-dir ./wan_model || \
-          uvx hf download Wan-AI/Wan2.1-T2V-1.3B --local-dir ./wan_model --include "*.json" "*.safetensors" "*.txt"
+          # Using a confirmed all-in-one MLX 4-bit repo
+          uvx hf download dgrauet/Wan2.1-T2V-1.3B-v0.1-mlx-4bit --local-dir ./wan_model
 
       - name: Wan2.1-1.3B Smoke Test
         continue-on-error: true
@@ -52,28 +47,27 @@ jobs:
           GENERATOR_MODULE=$(python3 - <<'PY'
           import os, mlx_video, pkgutil
           pkg_path = os.path.dirname(mlx_video.__file__)
-          # Search for the generator module
           found_mod = next((info.name for info in pkgutil.walk_packages([pkg_path], "mlx_video.") if "wan" in info.name and "generate" in info.name), "NOT_FOUND")
           print(found_mod)
           PY
           )
 
           if [ "$GENERATOR_MODULE" == "NOT_FOUND" ]; then
-            echo "Error: Generator not found in mlx_video package."
+            echo "Error: Generator not found."
             exit 1
           fi
 
           echo "Detected Module: $GENERATOR_MODULE"
           echo "=== Starting 4-bit Generation (7GB RAM Limit) ==="
           
-          # width/height must be divisible by 16 or 32 for Wan
+          # Running with ultra-low steps and resolution to survive 7GB RAM
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
             --prompt "A simple red ball bouncing" \
             --width 256 \
             --height 256 \
             --num-frames 9 \
-            --steps 5 \
+            --steps 3 \
             --output-path smoke_test.mp4
 
       - name: Upload Result
