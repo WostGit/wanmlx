@@ -1,4 +1,4 @@
-name: Test Ultra-Low Video MLX (Wan2.1-1.3B)
+name: Test Ultra-Low Video MLX (Wan2.1-1.3B) - Patched
 
 on:
   push:
@@ -26,7 +26,7 @@ jobs:
           uv pip install --system mlx torch huggingface_hub safetensors
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
-      - name: Download Lightweight Models (FP8 T5 + essentials)
+      - name: Download Lightweight Models
         run: |
           python3 - <<'EOF'
           import os
@@ -35,81 +35,56 @@ jobs:
           dest = "wan_model"
           os.makedirs(dest, exist_ok=True)
 
-          print("=== Downloading lightweight models for ultra-low RAM test ===")
-
-          # 1. FP8 T5 Encoder (~6.7 GB instead of 11.4 GB)
-          print("Downloading FP8 T5 encoder...")
-          hf_hub_download(
-              repo_id="Kijai/WanVideo_comfy",
-              filename="umt5-xxl-enc-fp8_e4m3fn.safetensors",
-              local_dir=dest,
-              local_dir_use_symlinks=False
-          )
-          os.rename(
-              os.path.join(dest, "umt5-xxl-enc-fp8_e4m3fn.safetensors"),
-              os.path.join(dest, "t5_encoder.safetensors")
-          )
+          # 1. FP8 T5 Encoder
+          hf_hub_download(repo_id="Kijai/WanVideo_comfy", filename="umt5-xxl-enc-fp8_e4m3fn.safetensors", local_dir=dest)
+          os.rename(os.path.join(dest, "umt5-xxl-enc-fp8_e4m3fn.safetensors"), os.path.join(dest, "t5_encoder.safetensors"))
 
           # 2. VAE
-          print("Downloading VAE...")
-          hf_hub_download(
-              repo_id="Wan-AI/Wan2.1-T2V-1.3B",
-              filename="Wan2.1_VAE.pth",
-              local_dir=dest,
-              local_dir_use_symlinks=False
-          )
-          os.rename(
-              os.path.join(dest, "Wan2.1_VAE.pth"),
-              os.path.join(dest, "vae.pth")
-          )
+          hf_hub_download(repo_id="Wan-AI/Wan2.1-T2V-1.3B", filename="Wan2.1_VAE.pth", local_dir=dest)
+          os.rename(os.path.join(dest, "Wan2.1_VAE.pth"), os.path.join(dest, "vae.pth"))
 
-          # 3. Transformer (DiT) - small enough for smoke test
-          print("Downloading Transformer...")
-          hf_hub_download(
-              repo_id="Wan-AI/Wan2.1-T2V-1.3B",
-              filename="diffusion_pytorch_model.safetensors",
-              local_dir=dest,
-              local_dir_use_symlinks=False
-          )
-          os.rename(
-              os.path.join(dest, "diffusion_pytorch_model.safetensors"),
-              os.path.join(dest, "transformer.safetensors")
-          )
+          # 3. Transformer
+          hf_hub_download(repo_id="Wan-AI/Wan2.1-T2V-1.3B", filename="diffusion_pytorch_model.safetensors", local_dir=dest)
+          os.rename(os.path.join(dest, "diffusion_pytorch_model.safetensors"), os.path.join(dest, "transformer.safetensors"))
 
-          # 4. Config (if needed)
-          print("Downloading config...")
-          hf_hub_download(
-              repo_id="Wan-AI/Wan2.1-T2V-1.3B",
-              filename="config.json",
-              local_dir=dest,
-              local_dir_use_symlinks=False
-          )
-
-          print("\n=== Files downloaded ===")
-          for f in sorted(os.listdir(dest)):
-              size_gb = os.path.getsize(os.path.join(dest, f)) / (1024**3)
-              print(f"  {f:45} {size_gb:.2f} GB")
-
-          # Show free space
-          print("\nFree disk space:")
-          os.system("df -h .")
+          # 4. Config
+          hf_hub_download(repo_id="Wan-AI/Wan2.1-T2V-1.3B", filename="config.json", local_dir=dest)
           EOF
 
-      - name: Wan2.1-1.3B Ultra-Low RAM Smoke Test
+      - name: Run Patched Generation
         continue-on-error: true
         run: |
-          echo "Starting Ultra-Low RAM Generation (128x128, 5 frames, 1 step)..."
-          GENERATOR_MODULE="mlx_video.models.wan_2.generate"
+          python3 - <<'EOF'
+          import os
+          import mlx.core as mx
+          from mlx_video.models.wan_2 import utils
+          from mlx_video.models.wan_2.generate import generate_video
+          from mlx_video.models.wan_2.utils import T5Encoder
 
-          python3 -m $GENERATOR_MODULE \
-            --model-dir ./wan_model \
-            --prompt "Red ball" \
-            --width 128 \
-            --height 128 \
-            --num-frames 5 \
-            --steps 1 \
-            --output-path smoke_test.mp4 \
-            --seed 7772016
+          # PATCH: Override the loader to ignore unexpected FP8 gate parameters
+          def patched_load_t5_encoder(t5_path, config):
+              print("Applying FP8 Compatibility Patch...")
+              model = T5Encoder(config.text_encoder)
+              weights = mx.load(os.path.join(t5_path, "t5_encoder.safetensors"))
+              # .update() ignores keys that don't match the model architecture
+              model.update(weights)
+              return model
+
+          # Apply the patch to the utils module
+          utils.load_t5_encoder = patched_load_t5_encoder
+
+          # Execute generation
+          generate_video(
+              model_dir="./wan_model",
+              prompt="Red ball",
+              width=128,
+              height=128,
+              num_frames=5,
+              steps=1,
+              output_path="smoke_test.mp4",
+              seed=7772016
+          )
+          EOF
 
       - name: Upload Result
         if: always()
@@ -117,14 +92,9 @@ jobs:
         with:
           name: smoke-test-video
           path: smoke_test.mp4
-          if-no-files-found: warn
 
       - name: Diagnostics
         if: always()
         run: |
-          echo "=== wan_model directory ==="
-          ls -lh wan_model || true
-          echo "=== Free space after run ==="
-          df -h .
-          echo "=== smoke_test.mp4 ==="
-          ls -lh smoke_test.mp4 || echo "No video generated"
+          ls -lh wan_model
+          ls -lh smoke_test.mp4 || echo "Video file not found."
