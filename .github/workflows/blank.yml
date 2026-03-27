@@ -23,6 +23,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Install huggingface_hub specifically to get the CLI
           uv pip install --system mlx torch huggingface_hub
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
@@ -30,26 +31,28 @@ jobs:
         run: |
           mkdir -p wan_model
           
-          # 1. Download files using the exact Hub paths
+          # We use python3 -m huggingface_hub.commands.cli to ensure the command is found
+          # and use --local-dir-use-symlinks False to ensure real files are downloaded
+          
           echo "Downloading Config..."
-          uvx hf download Wan-AI/Wan2.1-T2V-1.3B config.json --local-dir ./wan_model --local-dir-use-symlinks False
+          python3 -m huggingface_hub.commands.cli download Wan-AI/Wan2.1-T2V-1.3B config.json --local-dir ./wan_model --local-dir-use-symlinks False
           
           echo "Downloading VAE..."
-          uvx hf download Wan-AI/Wan2.1-T2V-1.3B Wan2.1_VAE.pth --local-dir ./wan_model --local-dir-use-symlinks False
+          python3 -m huggingface_hub.commands.cli download Wan-AI/Wan2.1-T2V-1.3B Wan2.1_VAE.pth --local-dir ./wan_model --local-dir-use-symlinks False
           
           echo "Downloading Transformer..."
-          uvx hf download Wan-AI/Wan2.1-T2V-1.3B diffusion_pytorch_model.safetensors --local-dir ./wan_model --local-dir-use-symlinks False
+          python3 -m huggingface_hub.commands.cli download Wan-AI/Wan2.1-T2V-1.3B diffusion_pytorch_model.safetensors --local-dir ./wan_model --local-dir-use-symlinks False
           
-          echo "Downloading T5 Encoder (Correcting Path)..."
-          # We pull from the 'models/' subdirectory but tell it to save in our local dir
-          uvx hf download Wan-AI/Wan2.1-T2V-1.3B models/t5_umt5-xxl-enc-bf16.safetensors --local-dir ./wan_model --local-dir-use-symlinks False
+          echo "Downloading T5 Encoder..."
+          # The official path is inside a models/ folder
+          python3 -m huggingface_hub.commands.cli download Wan-AI/Wan2.1-T2V-1.3B models/t5_umt5-xxl-enc-bf16.safetensors --local-dir ./wan_model --local-dir-use-symlinks False
 
-          # 2. RENAME AND FLATTEN
+          # RENAME AND FLATTEN
           echo "Renaming files for MLX-Video..."
           mv ./wan_model/Wan2.1_VAE.pth ./wan_model/vae.pth || true
           mv ./wan_model/diffusion_pytorch_model.safetensors ./wan_model/transformer.safetensors || true
           
-          # If it downloaded into a 'models' subfolder, move it out
+          # Handle the subfolder for T5
           if [ -f ./wan_model/models/t5_umt5-xxl-enc-bf16.safetensors ]; then
             mv ./wan_model/models/t5_umt5-xxl-enc-bf16.safetensors ./wan_model/t5_encoder.safetensors
           elif [ -f ./wan_model/t5_umt5-xxl-enc-bf16.safetensors ]; then
@@ -65,7 +68,7 @@ jobs:
           GENERATOR_MODULE="mlx_video.models.wan_2.generate"
           
           echo "Starting Ultra-Low RAM Generation..."
-          # 128x128 is the 'safe zone' for 7GB RAM
+          # Tiny resolution for the 7GB RAM limit
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
             --prompt "Red ball" \
