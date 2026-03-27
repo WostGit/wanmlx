@@ -1,0 +1,71 @@
+name: Test Ultra-Low Video MLX (Wan2.1-1.3B)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test-video-low-ram:
+    runs-on: macos-14
+    
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          # We use --system to avoid venv overhead in this ephemeral runner
+          uv pip install --system mlx torch
+          uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
+
+      - name: System Check
+        run: |
+          echo "=== Memory Status ==="
+          sysctl hw.memsize
+          vm_stat
+          df -h
+
+      - name: Wan2.1-1.3B Smoke Test
+        continue-on-error: true
+        run: |
+          echo "=== Starting Wan2.1-1.3B (4-bit) Generation ==="
+          
+          # Using the 1.3B model specifically to stay under the 7GB RAM limit
+          python3 -m mlx_video.wan2_1.generate \
+            --model-repo "mlx-community/Wan2.1-T2V-1.3B-4bit" \
+            --prompt "A simple red ball bouncing slowly on a white background" \
+            --width 256 \
+            --height 256 \
+            --num-frames 9 \
+            --output-path smoke_test.mp4
+
+      - name: Upload Result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-video
+          path: smoke_test.mp4
+          if-no-files-found: warn
+
+      - name: Final Diagnostics
+        if: always()
+        run: |
+          echo "=== Final Memory & Disk Usage ==="
+          top -l 1 | head -n 20
+          df -h
+          ls -lh *.mp4 || echo "No video file found."
