@@ -29,14 +29,17 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Install hub to download weights and MLX for generation
           uv pip install --system mlx torch huggingface_hub
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
       - name: Download Model Weights
         run: |
           echo "=== Downloading Wan2.1-1.3B-4bit ==="
-          # Downloading specifically to a local 'model' directory
-          huggingface-cli download mlx-community/Wan2.1-T2V-1.3B-4bit --local-dir ./wan_model
+          # Calling the CLI via python3 -m to ensure it is found
+          python3 -m huggingface_hub.commands.cli download \
+            mlx-community/Wan2.1-T2V-1.3B-4bit \
+            --local-dir ./wan_model
 
       - name: Wan2.1-1.3B Smoke Test
         continue-on-error: true
@@ -56,9 +59,9 @@ jobs:
           fi
 
           echo "Detected Module: $GENERATOR_MODULE"
-          echo "=== Starting 4-bit Generation ==="
+          echo "=== Starting 4-bit Generation (7GB RAM Limit) ==="
           
-          # Swapped --model-repo for --model-dir pointing to our downloaded folder
+          # Using the local path ./wan_model that we just downloaded
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
             --prompt "A simple red ball bouncing" \
