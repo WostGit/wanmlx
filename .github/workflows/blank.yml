@@ -26,43 +26,46 @@ jobs:
           uv pip install --system mlx torch huggingface_hub
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
-      - name: Forced Download and Rename
+      - name: Targeted Download and Rename
         run: |
           mkdir -p wan_model
           
-          # 1. Download the required files explicitly. 
-          # We use the official repo but pull specific files.
+          # 1. Download files using the exact Hub paths
           echo "Downloading Config..."
-          uvx hf download Wan-AI/Wan2.1-T2V-1.3B config.json --local-dir ./wan_model
+          uvx hf download Wan-AI/Wan2.1-T2V-1.3B config.json --local-dir ./wan_model --local-dir-use-symlinks False
           
           echo "Downloading VAE..."
-          uvx hf download Wan-AI/Wan2.1-T2V-1.3B Wan2.1_VAE.pth --local-dir ./wan_model
+          uvx hf download Wan-AI/Wan2.1-T2V-1.3B Wan2.1_VAE.pth --local-dir ./wan_model --local-dir-use-symlinks False
           
           echo "Downloading Transformer..."
-          uvx hf download Wan-AI/Wan2.1-T2V-1.3B diffusion_pytorch_model.safetensors --local-dir ./wan_model
+          uvx hf download Wan-AI/Wan2.1-T2V-1.3B diffusion_pytorch_model.safetensors --local-dir ./wan_model --local-dir-use-symlinks False
           
-          echo "Downloading T5 Encoder..."
-          # Note: The official repo uses .safetensors for the encoder in newer versions
-          uvx hf download Wan-AI/Wan2.1-T2V-1.3B models_t5_umt5-xxl-enc-bf16.safetensors --local-dir ./wan_model
+          echo "Downloading T5 Encoder (Correcting Path)..."
+          # We pull from the 'models/' subdirectory but tell it to save in our local dir
+          uvx hf download Wan-AI/Wan2.1-T2V-1.3B models/t5_umt5-xxl-enc-bf16.safetensors --local-dir ./wan_model --local-dir-use-symlinks False
 
-          # 2. RENAME EVERYTHING to match what the library expects
+          # 2. RENAME AND FLATTEN
           echo "Renaming files for MLX-Video..."
-          mv ./wan_model/Wan2.1_VAE.pth ./wan_model/vae.pth
-          mv ./wan_model/diffusion_pytorch_model.safetensors ./wan_model/transformer.safetensors
-          mv ./wan_model/models_t5_umt5-xxl-enc-bf16.safetensors ./wan_model/t5_encoder.safetensors
+          mv ./wan_model/Wan2.1_VAE.pth ./wan_model/vae.pth || true
+          mv ./wan_model/diffusion_pytorch_model.safetensors ./wan_model/transformer.safetensors || true
+          
+          # If it downloaded into a 'models' subfolder, move it out
+          if [ -f ./wan_model/models/t5_umt5-xxl-enc-bf16.safetensors ]; then
+            mv ./wan_model/models/t5_umt5-xxl-enc-bf16.safetensors ./wan_model/t5_encoder.safetensors
+          elif [ -f ./wan_model/t5_umt5-xxl-enc-bf16.safetensors ]; then
+            mv ./wan_model/t5_umt5-xxl-enc-bf16.safetensors ./wan_model/t5_encoder.safetensors
+          fi
           
           echo "=== Final Folder Structure ==="
-          ls -lh ./wan_model
+          ls -R ./wan_model
 
       - name: Wan2.1-1.3B Smoke Test
         continue-on-error: true
         run: |
-          # Use the known module path
           GENERATOR_MODULE="mlx_video.models.wan_2.generate"
-
-          echo "Starting Ultra-Low RAM Generation..."
           
-          # Using tiny dimensions to stay within 7GB RAM
+          echo "Starting Ultra-Low RAM Generation..."
+          # 128x128 is the 'safe zone' for 7GB RAM
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
             --prompt "Red ball" \
