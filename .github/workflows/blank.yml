@@ -26,32 +26,43 @@ jobs:
           uv pip install --system mlx torch huggingface_hub
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
-      - name: Download Official Weights
+      - name: Forced Download and Rename
         run: |
-          echo "=== Downloading Official Wan-AI Weights ==="
           mkdir -p wan_model
           
-          # Downloading only the essential files to save disk and ensure the path exists
-          uvx hf download Wan-AI/Wan2.1-T2V-1.3B \
-            --include "config.json" "diffusion_pytorch_model.safetensors" "Wan2.1_VAE.pth" "models_t5_umt5-xxl-enc-bf16.safetensors" \
-            --local-dir ./wan_model
+          # 1. Download the required files explicitly. 
+          # We use the official repo but pull specific files.
+          echo "Downloading Config..."
+          uvx hf download Wan-AI/Wan2.1-T2V-1.3B config.json --local-dir ./wan_model
+          
+          echo "Downloading VAE..."
+          uvx hf download Wan-AI/Wan2.1-T2V-1.3B Wan2.1_VAE.pth --local-dir ./wan_model
+          
+          echo "Downloading Transformer..."
+          uvx hf download Wan-AI/Wan2.1-T2V-1.3B diffusion_pytorch_model.safetensors --local-dir ./wan_model
+          
+          echo "Downloading T5 Encoder..."
+          # Note: The official repo uses .safetensors for the encoder in newer versions
+          uvx hf download Wan-AI/Wan2.1-T2V-1.3B models_t5_umt5-xxl-enc-bf16.safetensors --local-dir ./wan_model
 
-          # Standardize filenames for the mlx-video loader
-          cd wan_model
-          [ -f diffusion_pytorch_model.safetensors ] && mv diffusion_pytorch_model.safetensors transformer.safetensors
-          [ -f models_t5_umt5-xxl-enc-bf16.safetensors ] && mv models_t5_umt5-xxl-enc-bf16.safetensors t5_encoder.safetensors
-          [ -f Wan2.1_VAE.pth ] && mv Wan2.1_VAE.pth vae.pth
-          cd ..
+          # 2. RENAME EVERYTHING to match what the library expects
+          echo "Renaming files for MLX-Video..."
+          mv ./wan_model/Wan2.1_VAE.pth ./wan_model/vae.pth
+          mv ./wan_model/diffusion_pytorch_model.safetensors ./wan_model/transformer.safetensors
+          mv ./wan_model/models_t5_umt5-xxl-enc-bf16.safetensors ./wan_model/t5_encoder.safetensors
+          
+          echo "=== Final Folder Structure ==="
+          ls -lh ./wan_model
 
       - name: Wan2.1-1.3B Smoke Test
         continue-on-error: true
         run: |
-          # Identify the generator module
-          GENERATOR_MODULE=$(python3 -c "import mlx_video; print('mlx_video.models.wan_2.generate')")
+          # Use the known module path
+          GENERATOR_MODULE="mlx_video.models.wan_2.generate"
 
           echo "Starting Ultra-Low RAM Generation..."
           
-          # Using 128x128 resolution to guarantee success on 7GB RAM
+          # Using tiny dimensions to stay within 7GB RAM
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
             --prompt "Red ball" \
@@ -68,9 +79,3 @@ jobs:
           name: smoke-test-video
           path: smoke_test.mp4
           if-no-files-found: warn
-
-      - name: Final Diagnostics
-        if: always()
-        run: |
-          ls -R wan_model
-          [ -f smoke_test.mp4 ] && echo "Success!" || echo "Failed to generate video."
