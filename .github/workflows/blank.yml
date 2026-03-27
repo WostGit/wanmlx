@@ -1,4 +1,4 @@
-name: Test Ultra-Low Video MLX (Wan2.1-1.3B) - Patched
+name: Test Ultra-Low Video MLX (Wan2.1-1.3B) - Fixed Patch
 
 on:
   push:
@@ -59,21 +59,29 @@ jobs:
           import mlx.core as mx
           from mlx_video.models.wan_2 import utils
           from mlx_video.models.wan_2.generate import generate_video
-          from mlx_video.models.wan_2.utils import T5Encoder
 
-          # PATCH: Override the loader to ignore unexpected FP8 gate parameters
-          def patched_load_t5_encoder(t5_path, config):
-              print("Applying FP8 Compatibility Patch...")
-              model = T5Encoder(config.text_encoder)
-              weights = mx.load(os.path.join(t5_path, "t5_encoder.safetensors"))
-              # .update() ignores keys that don't match the model architecture
-              model.update(weights)
-              return model
+          # --- DICTIONARY HIJACK PATCH ---
+          # We intercept mx.load globally. When the library tries to load the T5 weights,
+          # we filter out the ".gate." keys that the model architecture doesn't expect.
+          
+          original_mx_load = mx.load
 
-          # Apply the patch to the utils module
-          utils.load_t5_encoder = patched_load_t5_encoder
+          def filtered_mx_load(path, *args, **kwargs):
+              weights = original_mx_load(path, *args, **kwargs)
+              # If we are loading the T5 encoder, scrub the FP8 gate parameters
+              if "t5_encoder" in str(path):
+                  print(f"DEBUG: Hijacking load for {path}")
+                  initial_count = len(weights)
+                  filtered = {k: v for k, v in weights.items() if ".gate." not in k}
+                  print(f"DEBUG: Removed {initial_count - len(filtered)} gate parameters.")
+                  return filtered
+              return weights
 
-          # Execute generation
+          # Apply the hijack
+          mx.load = filtered_mx_load
+          # -------------------------------
+
+          # Run the generation using the standard library function
           generate_video(
               model_dir="./wan_model",
               prompt="Red ball",
