@@ -29,23 +29,29 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv pip install --system mlx torch
+          uv pip install --system mlx torch huggingface_hub hf_transfer
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
       - name: Download Model Weights
+        env:
+          HF_HUB_ENABLE_HF_TRANSFER: 1
         run: |
-          echo "=== Downloading Wan2.1-1.3B-4bit ==="
+          echo "=== Downloading Official Wan2.1-1.3B Weights ==="
           mkdir -p wan_model
-          # Using the official mlx-community repo which is public
-          uvx hf download mlx-community/Wan2.1-T2V-1.3B-4bit --local-dir ./wan_model
           
-          echo "=== Content of wan_model ==="
-          ls -F ./wan_model
+          # We target the official repo. Even if 4-bit isn't a separate repo, 
+          # mlx-video will load these weights into memory efficiently.
+          uvx hf download Wan-AI/Wan2.1-T2V-1.3B \
+            --include "config.json" "*.safetensors" "*.txt" \
+            --local-dir ./wan_model
+
+          echo "=== Verification: Model Files ==="
+          ls -R ./wan_model
 
       - name: Wan2.1-1.3B Smoke Test
         continue-on-error: true
         run: |
-          echo "=== Locating Wan Generator Module ==="
+          # Identify the generator module dynamically
           GENERATOR_MODULE=$(python3 - <<'PY'
           import os, mlx_video, pkgutil
           pkg_path = os.path.dirname(mlx_video.__file__)
@@ -55,17 +61,17 @@ jobs:
           )
 
           if [ "$GENERATOR_MODULE" == "NOT_FOUND" ]; then
-            echo "Error: Generator not found."
+            echo "Error: MLX Generator module not found."
             exit 1
           fi
 
           echo "Detected Module: $GENERATOR_MODULE"
-          echo "=== Starting 4-bit Generation (7GB RAM Limit) ==="
+          echo "=== Starting 1-Step Generation (7GB RAM Guard) ==="
           
-          # Using ultra-low settings to ensure we don't hit the 7GB RAM wall
+          # Using 1 step and 256px to ensure we don't swap to disk/OOM
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
-            --prompt "A simple red ball bouncing" \
+            --prompt "A small green cube spinning" \
             --width 256 \
             --height 256 \
             --num-frames 9 \
@@ -84,5 +90,5 @@ jobs:
         if: always()
         run: |
           echo "=== Final Status ==="
-          [ -f smoke_test.mp4 ] && ls -lh smoke_test.mp4 || echo "Video generation failed."
+          [ -f smoke_test.mp4 ] && ls -lh smoke_test.mp4 || echo "Generation failed."
           df -h
