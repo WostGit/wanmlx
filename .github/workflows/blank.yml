@@ -8,7 +8,7 @@ on:
 jobs:
   test-video-low-ram:
     runs-on: macos-14
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,53 +23,88 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv pip install --system mlx torch huggingface_hub
+          uv pip install --system mlx torch huggingface_hub safetensors
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
-      - name: Robust Python Download
+      - name: Download and Prepare Wan2.1-1.3B Models
         run: |
           python3 - <<'EOF'
-          import os, shutil
+          import os
+          import shutil
           from huggingface_hub import hf_hub_download, list_repo_files
 
           repo = "Wan-AI/Wan2.1-T2V-1.3B"
           dest = "wan_model"
           os.makedirs(dest, exist_ok=True)
 
-          # Get all files in the repo to find the real T5 filename
+          print("Listing files in repo...")
           all_files = list_repo_files(repo)
-          
-          # Logic to find the correct files based on patterns
+
           target_files = {}
-          
-          # Find Config
-          target_files["config.json"] = next(f for f in all_files if f.endswith("config.json"))
-          # Find VAE
-          target_files["vae.pth"] = next(f for f in all_files if "VAE" in f)
-          # Find Transformer
-          target_files["transformer.safetensors"] = next(f for f in all_files if "diffusion_pytorch_model" in f)
-          # Find T5 Encoder (The tricky one)
-          target_files["t5_encoder.safetensors"] = next(f for f in all_files if "t5" in f.lower() and f.endswith((".safetensors", ".pth")))
 
+          # Config
+          config_cands = [f for f in all_files if f.endswith("config.json")]
+          if config_cands:
+              target_files["config.json"] = config_cands[0]
+
+          # VAE
+          vae_cands = [f for f in all_files if "vae" in f.lower()]
+          if vae_cands:
+              target_files["vae.pth"] = vae_cands[0]
+
+          # Transformer
+          trans_cands = [f for f in all_files if "diffusion_pytorch_model" in f or "transformer" in f.lower()]
+          if trans_cands:
+              target_files["transformer.safetensors"] = trans_cands[0]
+
+          # T5 Encoder (the problematic one)
+          t5_cands = [f for f in all_files if ("t5" in f.lower() or "umt5" in f.lower()) and f.endswith((".pth", ".safetensors"))]
+          if t5_cands:
+              # Prefer safetensors if available, otherwise the official .pth
+              t5_file = next((f for f in t5_cands if f.endswith(".safetensors")), t5_cands[0])
+              target_files["t5_source"] = t5_file
+          else:
+              raise ValueError("T5 encoder not found in the repository!")
+
+          # Download files
           for local_name, remote_path in target_files.items():
+              if local_name == "t5_source":
+                  continue
               print(f"Downloading {remote_path} as {local_name}...")
-              downloaded_path = hf_hub_download(repo_id=repo, filename=remote_path, local_dir=dest)
-              
-              # Flatten the structure: Move to root of wan_model
-              final_dest = os.path.join(dest, local_name)
-              if os.path.abspath(downloaded_path) != os.path.abspath(final_dest):
-                  shutil.move(downloaded_path, final_dest)
+              hf_hub_download(repo_id=repo, filename=remote_path, local_dir=dest, local_dir_use_symlinks=False)
 
-          print("Successfully prepared wan_model directory.")
+          # Handle T5 specially (rename + possible conversion)
+          t5_remote = target_files["t5_source"]
+          print(f"Downloading T5 encoder: {t5_remote}")
+          t5_downloaded = hf_hub_download(repo_id=repo, filename=t5_remote, local_dir=dest, local_dir_use_symlinks=False)
+
+          t5_final = os.path.join(dest, "t5_encoder.safetensors")
+          t5_pth = os.path.join(dest, "models_t5_umt5-xxl-enc-bf16.pth")
+
+          if t5_remote.endswith(".pth"):
+              shutil.move(t5_downloaded, t5_pth)
+              print("T5 is .pth file → converting to safetensors...")
+              import torch
+              import safetensors.torch
+              state_dict = torch.load(t5_pth, map_location="cpu", weights_only=True)
+              safetensors.torch.save_file(state_dict, t5_final)
+              print("Conversion completed successfully.")
+          else:
+              shutil.move(t5_downloaded, t5_final)
+              print("T5 already in safetensors format.")
+
+          print("\n=== Files in wan_model ===")
+          for f in sorted(os.listdir(dest)):
+              size_gb = os.path.getsize(os.path.join(dest, f)) / (1024**3)
+              print(f"  {f:40} {size_gb:.2f} GB")
           EOF
 
-      - name: Wan2.1-1.3B Smoke Test
+      - name: Wan2.1-1.3B Ultra-Low RAM Smoke Test
         continue-on-error: true
         run: |
+          echo "Starting Ultra-Low RAM Generation (128x128, 5 frames, 1 step)..."
           GENERATOR_MODULE="mlx_video.models.wan_2.generate"
-          
-          echo "Starting Ultra-Low RAM Generation..."
-          # 128x128 resolution + 1 step = lowest possible memory footprint
+
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
             --prompt "Red ball" \
@@ -77,7 +112,8 @@ jobs:
             --height 128 \
             --num-frames 5 \
             --steps 1 \
-            --output-path smoke_test.mp4
+            --output-path smoke_test.mp4 \
+            --seed 7772016
 
       - name: Upload Result
         if: always()
@@ -90,5 +126,7 @@ jobs:
       - name: Diagnostics
         if: always()
         run: |
-          echo "=== Files in wan_model ==="
-          ls -lh wan_model
+          echo "=== Final files in wan_model ==="
+          ls -lh wan_model || true
+          echo "=== smoke_test.mp4 exists? ==="
+          ls -lh smoke_test.mp4 || echo "No video generated"
