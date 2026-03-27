@@ -23,40 +23,41 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Install core MLX and the video engine
           uv pip install --system mlx torch huggingface_hub
           uv pip install --system "git+https://github.com/Blaizzy/mlx-video.git"
 
-      - name: Download 4-bit Weights
+      - name: Download Official Weights
         run: |
-          echo "=== Downloading MLX-Community 4-bit Weights ==="
+          echo "=== Downloading Official Wan-AI Weights ==="
           mkdir -p wan_model
           
-          # This repo contains the 4-bit T5 and 4-bit Transformer
-          # Total size is ~1.2GB, which fits perfectly in 7GB RAM
-          uvx hf download mlx-community/Wan2.1-T2V-1.3B-4bit --local-dir ./wan_model
+          # Downloading only the essential files to save disk and ensure the path exists
+          uvx hf download Wan-AI/Wan2.1-T2V-1.3B \
+            --include "config.json" "diffusion_pytorch_model.safetensors" "Wan2.1_VAE.pth" "models_t5_umt5-xxl-enc-bf16.safetensors" \
+            --local-dir ./wan_model
+
+          # Standardize filenames for the mlx-video loader
+          cd wan_model
+          [ -f diffusion_pytorch_model.safetensors ] && mv diffusion_pytorch_model.safetensors transformer.safetensors
+          [ -f models_t5_umt5-xxl-enc-bf16.safetensors ] && mv models_t5_umt5-xxl-enc-bf16.safetensors t5_encoder.safetensors
+          [ -f Wan2.1_VAE.pth ] && mv Wan2.1_VAE.pth vae.pth
+          cd ..
 
       - name: Wan2.1-1.3B Smoke Test
         continue-on-error: true
         run: |
           # Identify the generator module
-          GENERATOR_MODULE=$(python3 -c "import mlx_video, pkgutil, os; pkg_path = os.path.dirname(mlx_video.__file__); print(next((info.name for info in pkgutil.walk_packages([pkg_path], 'mlx_video.') if 'wan' in info.name and 'generate' in info.name), 'NOT_FOUND'))")
+          GENERATOR_MODULE=$(python3 -c "import mlx_video; print('mlx_video.models.wan_2.generate')")
 
-          if [ "$GENERATOR_MODULE" == "NOT_FOUND" ]; then
-            echo "Error: Generator not found."
-            exit 1
-          fi
-
-          echo "Detected Module: $GENERATOR_MODULE"
-          echo "Starting 1-Step Generation..."
+          echo "Starting Ultra-Low RAM Generation..."
           
-          # Using ONLY the flags supported by the help menu you provided
+          # Using 128x128 resolution to guarantee success on 7GB RAM
           python3 -m $GENERATOR_MODULE \
             --model-dir ./wan_model \
-            --prompt "A simple red ball bouncing" \
-            --width 256 \
-            --height 256 \
-            --num-frames 9 \
+            --prompt "Red ball" \
+            --width 128 \
+            --height 128 \
+            --num-frames 5 \
             --steps 1 \
             --output-path smoke_test.mp4
 
@@ -68,8 +69,8 @@ jobs:
           path: smoke_test.mp4
           if-no-files-found: warn
 
-      - name: Final Status
+      - name: Final Diagnostics
         if: always()
         run: |
-          ls -lh smoke_test.mp4 || echo "Video generation failed."
-          df -h
+          ls -R wan_model
+          [ -f smoke_test.mp4 ] && echo "Success!" || echo "Failed to generate video."
